@@ -11,6 +11,8 @@ export default function App() {
   const [allPositions, setAllPositions] = useState([])
   const [loading, setLoading] = useState(true)
   const [toast, setToast] = useState(null)
+  const [refreshing, setRefreshing] = useState(false)
+  const [lastUpdated, setLastUpdated] = useState(null)
 
   useEffect(() => { fetchAll() }, [])
 
@@ -23,13 +25,64 @@ export default function App() {
 
   function showToast(msg, type = 'ok') {
     setToast({ msg, type })
-    setTimeout(() => setToast(null), 3000)
+    setTimeout(() => setToast(null), 4000)
   }
+
+  // ─── UPDATE SEMUA HARGA DARI YAHOO FINANCE ───────────────────────────────
+  async function updateAllPrices() {
+    setRefreshing(true)
+    try {
+      const codes = [...new Set(
+        allPositions
+          .filter(p => p.type === 'saham' && p.code && p.code !== 'EMAS')
+          .map(p => p.code)
+      )]
+
+      if (codes.length === 0) {
+        showToast('Tidak ada posisi saham untuk di-update', 'err')
+        return
+      }
+
+      const res = await fetch(`/api/prices?codes=${codes.join(',')}`)
+      if (!res.ok) throw new Error(`API error: ${res.status}`)
+
+      const { prices, found, notFound } = await res.json()
+
+      if (!prices || found === 0) {
+        throw new Error('Tidak ada harga yang berhasil diambil dari Yahoo Finance')
+      }
+
+      // Batch update ke Supabase
+      const updates = allPositions
+        .filter(p => p.type === 'saham' && prices[p.code] !== undefined)
+        .map(p =>
+          supabase
+            .from('positions')
+            .update({ current_price: prices[p.code] })
+            .eq('id', p.id)
+        )
+
+      await Promise.all(updates)
+      await fetchAll()
+
+      setLastUpdated(new Date())
+
+      const msg = notFound?.length > 0
+        ? `✓ ${found} saham diupdate · Tidak ditemukan: ${notFound.join(', ')}`
+        : `✓ ${found} saham diupdate dari Yahoo Finance`
+      showToast(msg)
+
+    } catch (err) {
+      showToast('Gagal update harga: ' + err.message, 'err')
+    } finally {
+      setRefreshing(false)
+    }
+  }
+  // ─────────────────────────────────────────────────────────────────────────
 
   const positions = allPositions.filter(p => p.account === activeAccount)
   const alerts = getAlerts(positions)
 
-  // Summary all accounts
   const summary = ACCOUNTS.map(acc => {
     const pos = allPositions.filter(p => p.account === acc.id)
     const invested = pos.reduce((s, p) => {
@@ -49,6 +102,7 @@ export default function App() {
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
+
       {/* Toast */}
       {toast && (
         <div style={{
@@ -57,24 +111,60 @@ export default function App() {
           border: `1px solid ${toast.type === 'ok' ? 'var(--green)' : 'var(--red)'}`,
           color: toast.type === 'ok' ? 'var(--green)' : 'var(--red)',
           borderRadius: 8, padding: '10px 16px', fontSize: 13, fontWeight: 600,
-          boxShadow: '0 4px 20px rgba(0,0,0,0.4)'
+          boxShadow: '0 4px 20px rgba(0,0,0,0.4)', maxWidth: 360
         }}>
           {toast.msg}
         </div>
       )}
 
       {/* Header */}
-      <div style={{ borderBottom: '1px solid var(--border)', padding: '14px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      <div style={{
+        borderBottom: '1px solid var(--border)', padding: '14px 16px',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between'
+      }}>
         <div>
           <div style={{ color: 'var(--gold)', fontFamily: 'var(--font-mono)', fontWeight: 700, fontSize: 14, letterSpacing: 2 }}>
             ◆ INVESTASI DASHBOARD
           </div>
           <div style={{ color: 'var(--muted)', fontSize: 11, marginTop: 2 }}>IDX Syariah · BSI Emas · Multi Akun</div>
         </div>
-        {loading && <div style={{ color: 'var(--muted)', fontSize: 12, fontFamily: 'var(--font-mono)' }}>memuat...</div>}
+
+        {/* Refresh Button */}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+          <button
+            onClick={updateAllPrices}
+            disabled={refreshing || loading}
+            style={{
+              background: refreshing ? 'var(--surface)' : 'var(--gold-dim)',
+              border: `1px solid ${refreshing ? 'var(--border)' : 'var(--gold)'}`,
+              color: refreshing ? 'var(--muted)' : 'var(--gold)',
+              borderRadius: 6, padding: '6px 12px', cursor: refreshing ? 'not-allowed' : 'pointer',
+              fontSize: 12, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 6,
+              transition: 'all 0.15s', opacity: refreshing ? 0.7 : 1
+            }}
+          >
+            <span style={{
+              display: 'inline-block',
+              animation: refreshing ? 'spin 1s linear infinite' : 'none'
+            }}>🔄</span>
+            {refreshing ? 'Mengambil harga...' : 'Update Harga'}
+          </button>
+          {lastUpdated && (
+            <div style={{ color: 'var(--muted)', fontSize: 10, fontFamily: 'var(--font-mono)' }}>
+              update: {lastUpdated.toLocaleTimeString('id-ID')}
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Account Summary Bar - horizontal scroll */}
+      {/* Loading indicator */}
+      {loading && (
+        <div style={{ textAlign: 'center', padding: '6px', color: 'var(--muted)', fontSize: 11, borderBottom: '1px solid var(--border)' }}>
+          memuat...
+        </div>
+      )}
+
+      {/* Account Summary Bar */}
       <div style={{ borderBottom: '1px solid var(--border)', padding: '10px 16px', overflowX: 'auto' }}>
         <div style={{ display: 'flex', gap: 8, minWidth: 'max-content' }}>
           {summary.map(acc => (
@@ -104,7 +194,7 @@ export default function App() {
         </div>
       </div>
 
-      {/* Alerts for active account */}
+      {/* Alerts */}
       {alerts.length > 0 && (
         <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--border)' }}>
           {alerts.map((a, i) => (
@@ -159,6 +249,11 @@ export default function App() {
           />
         )}
       </div>
+
+      {/* Spin animation */}
+      <style>{`
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+      `}</style>
     </div>
   )
 }
